@@ -49,15 +49,140 @@ emotion_dict = {
     3: "Happy", 4: "Neutral", 5: "Sad", 6: "Surprised"
 }
 
-emotion_response = {
-    "Angry": "Take a deep breath, what's bothering you?",
-    "Disgusted": "Is something unpleasant around you?",
-    "Fearful": "Don't be afraid, you're safe here.",
-    "Happy": "You look happy!",
-    "Neutral": "You seem calm and neutral.",
-    "Sad": "Why are you sad?",
-    "Surprised": "That face shows surprise! What's the news?"
-}
+def get_emotion_response(emotion, confidence):
+    """Generate emotion-specific responses based on confidence levels"""
+    
+    # High confidence responses (80%+)
+    high_confidence_responses = {
+        "Angry": [
+            "I can clearly see you're very angry right now. Take deep breaths and count to ten.",
+            "Your anger is quite evident. What's causing this intense frustration?",
+            "You look really upset. Would you like to talk about what's making you so angry?"
+        ],
+        "Disgusted": [
+            "You look genuinely disgusted. Is something particularly unpleasant bothering you?",
+            "That's a clear look of disgust. What's causing this strong reaction?",
+            "I can see you're really put off by something. What's making you feel this way?"
+        ],
+        "Fearful": [
+            "I can see you're quite frightened. Remember, you're safe here with me.",
+            "You look genuinely scared. Take a moment to breathe - everything will be okay.",
+            "Your fear is very apparent. What's making you feel so anxious right now?"
+        ],
+        "Happy": [
+            "You're beaming with joy! Your happiness is absolutely contagious!",
+            "What a wonderful, genuine smile! You look truly delighted!",
+            "Your happiness is radiating! Something amazing must have happened!"
+        ],
+        "Neutral": [
+            "You appear completely calm and composed. A picture of tranquility.",
+            "Your expression shows perfect balance and serenity.",
+            "You look peacefully neutral - very centered and mindful."
+        ],
+        "Sad": [
+            "I can see deep sadness in your expression. I'm here if you want to share what's wrong.",
+            "You look genuinely heartbroken. Sometimes it helps to talk about what's troubling you.",
+            "Your sadness is very clear. Remember that difficult feelings are temporary."
+        ],
+        "Surprised": [
+            "Wow! You look absolutely astonished! What just happened?",
+            "That's pure shock on your face! Tell me about this big surprise!",
+            "You're clearly stunned by something! What caught you so off guard?"
+        ]
+    }
+    
+    # Medium confidence responses (50-79%)
+    medium_confidence_responses = {
+        "Angry": [
+            "You seem somewhat irritated. Is something bothering you?",
+            "I detect some frustration. What's on your mind?",
+            "You appear a bit upset. Want to talk about it?"
+        ],
+        "Disgusted": [
+            "You look a bit put off by something. What's not sitting well with you?",
+            "I sense some displeasure. Is something not quite right?",
+            "You seem mildly disgusted. What's causing this reaction?"
+        ],
+        "Fearful": [
+            "You look a bit worried. Is everything alright?",
+            "I sense some anxiety. What's making you feel uneasy?",
+            "You appear somewhat concerned. What's troubling you?"
+        ],
+        "Happy": [
+            "You seem to be in a good mood! Something nice happen?",
+            "I can see a hint of happiness. What's bringing you joy?",
+            "You look pleased about something. Care to share?"
+        ],
+        "Neutral": [
+            "You appear calm and collected. How are you feeling?",
+            "Your expression seems balanced. Everything going well?",
+            "You look composed. What's on your mind?"
+        ],
+        "Sad": [
+            "You seem a bit down. Is something weighing on your mind?",
+            "I detect some melancholy. What's making you feel low?",
+            "You appear somewhat troubled. Want to talk about it?"
+        ],
+        "Surprised": [
+            "You look a bit taken aback. Something unexpected happen?",
+            "I sense some surprise. What caught your attention?",
+            "You seem mildly shocked. What's the news?"
+        ]
+    }
+    
+    # Low confidence responses (below 50%)
+    low_confidence_responses = {
+        "Angry": [
+            "I'm picking up on some possible tension. How are you really feeling?",
+            "There might be some frustration there. Want to talk about your day?",
+            "I sense you might be a bit agitated. What's going on?"
+        ],
+        "Disgusted": [
+            "Something seems to be bothering you slightly. What's on your mind?",
+            "I might be detecting some displeasure. Is everything okay?",
+            "You could be feeling a bit off about something. Care to share?"
+        ],
+        "Fearful": [
+            "You might be feeling a bit uncertain. Is there something worrying you?",
+            "I sense you could be slightly anxious. What's on your mind?",
+            "There might be some concern there. Want to talk about it?"
+        ],
+        "Happy": [
+            "You might be feeling a bit positive. What's going well today?",
+            "I think I detect some contentment. How are things going?",
+            "You could be in a decent mood. Anything good happening?"
+        ],
+        "Neutral": [
+            "You seem fairly balanced. How are you feeling right now?",
+            "Your expression appears neutral. What's going through your mind?",
+            "You look pretty calm. How's your day going?"
+        ],
+        "Sad": [
+            "You might be feeling a bit low. Is everything alright?",
+            "I think I detect some sadness. What's been on your mind?",
+            "You could be feeling down about something. Want to share?"
+        ],
+        "Surprised": [
+            "You might have been caught off guard by something. What happened?",
+            "I think something unexpected might have occurred. Care to share?",
+            "You could be processing something surprising. What's new?"
+        ]
+    }
+    
+    # Select response set based on confidence
+    if confidence >= 0.8:
+        responses = high_confidence_responses.get(emotion, ["I can clearly see strong emotions."])
+    elif confidence >= 0.5:
+        responses = medium_confidence_responses.get(emotion, ["I think I detect some emotions."])
+    else:
+        responses = low_confidence_responses.get(emotion, ["I'm trying to read your expression."])
+    
+    # Add confidence qualifier to the response
+    import random
+    base_response = random.choice(responses)
+
+    
+    return base_response
 
 latest_emotion = "Neutral"
 latest_confidence = 0.0
@@ -76,12 +201,13 @@ def send_emotion_message():
         
     if connected_clients > 0:
         try:
-            response = emotion_response.get(latest_emotion, "How are you?")
+            response = get_emotion_response(latest_emotion, latest_confidence)
             payload = {
                 "type": "AVATAR_TALK",
                 "text": response,
                 "confidence": round(latest_confidence, 4),
                 "emotion": latest_emotion,
+                "confidence_level": "high" if latest_confidence >= 0.8 else "medium" if latest_confidence >= 0.5 else "low",
                 "timestamp": int(current_time * 1000)
             }
             print("Sending via socket.io:", payload)
