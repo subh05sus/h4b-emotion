@@ -190,29 +190,70 @@ connected_clients = 0
 camera_active = False
 last_message_time = 0
 
+# Aggressive frequency control
+emotion_stability_tracker = {}
+last_sent_emotion = None
+minimum_emotion_duration = 15  # Must detect same emotion for 15 consecutive times (7.5 seconds)
+message_cooldown = 30  # 30 seconds between any messages
+message_count = 0
+
+def should_send_message(emotion, confidence):
+    """Determine if we should send a message - very strict criteria"""
+    global emotion_stability_tracker, last_sent_emotion, minimum_emotion_duration
+    
+    # Track emotion stability
+    if emotion not in emotion_stability_tracker:
+        emotion_stability_tracker[emotion] = 0
+    
+    # Reset other emotions when new emotion detected
+    for key in list(emotion_stability_tracker.keys()):
+        if key != emotion:
+            emotion_stability_tracker[key] = 0
+    
+    # Increment current emotion count
+    emotion_stability_tracker[emotion] += 1
+    
+    current_count = emotion_stability_tracker[emotion]
+    
+    # Only send message if:
+    # 1. Emotion has been stable for minimum duration
+    # 2. Haven't sent this emotion recently
+    # 3. Confidence is reasonably high (> 0.6)
+    # 4. Enough time has passed since last message
+    if (current_count >= minimum_emotion_duration and 
+        emotion != last_sent_emotion and 
+        confidence > 0.6 and
+        (time.time() - last_message_time) >= message_cooldown):
+        
+        print(f"Message criteria met: {emotion} stable for {current_count} detections, confidence {confidence:.2f}")
+        return True
+    
+    return False
+
 def send_emotion_message():
     """Send emotion message to all connected clients with error handling"""
-    global latest_emotion, latest_confidence, last_message_time
+    global latest_emotion, latest_confidence, last_message_time, message_count, last_sent_emotion
     
     current_time = time.time()
-    # Avoid sending messages too frequently (max once per second)
-    if current_time - last_message_time < 1.0:
-        return
-        
+    
     if connected_clients > 0:
         try:
             response = get_emotion_response(latest_emotion, latest_confidence)
+            message_count += 1
             payload = {
                 "type": "AVATAR_TALK",
                 "text": response,
                 "confidence": round(latest_confidence, 4),
                 "emotion": latest_emotion,
                 "confidence_level": "high" if latest_confidence >= 0.8 else "medium" if latest_confidence >= 0.5 else "low",
+                "message_number": message_count,
+                "stability_count": emotion_stability_tracker.get(latest_emotion, 0),
                 "timestamp": int(current_time * 1000)
             }
-            print("Sending via socket.io:", payload)
+            print(f"🔊 Sending message #{message_count}: {latest_emotion} (confidence: {latest_confidence:.2f})")
             socketio.emit("AVATAR_TALK", payload)
             last_message_time = current_time
+            last_sent_emotion = latest_emotion
         except Exception as e:
             print(f"Error sending message: {e}")
 
@@ -251,20 +292,21 @@ def camera_worker():
                 for (x, y, w, h) in faces:
                     roi_gray = gray[y:y + h, x:x + w]
                     cropped_img = np.expand_dims(np.expand_dims(cv2.resize(roi_gray, (48, 48)), -1), 0)
-                    
-                    # Suppress prediction warnings
+                      # Suppress prediction warnings
                     with np.errstate(divide='ignore', invalid='ignore'):
                         prediction = model.predict(cropped_img, verbose=0)
                     
                     maxindex = int(np.argmax(prediction))
                     latest_emotion = emotion_dict[maxindex]
                     latest_confidence = float(prediction[0][maxindex])
-                    print(f"Detected: {latest_emotion} ({latest_confidence:.2f})")
                     
-                    # Send message immediately when emotion changes
-                    if latest_emotion != last_emotion and connected_clients > 0:
+                    # Show detection with stability info
+                    stability_count = emotion_stability_tracker.get(latest_emotion, 0) + 1
+                    print(f"👁️  Detected: {latest_emotion} ({latest_confidence:.2f}) [Stability: {stability_count}/{minimum_emotion_duration}]")
+                    
+                    # Only send message if strict criteria are met
+                    if should_send_message(latest_emotion, latest_confidence) and connected_clients > 0:
                         send_emotion_message()
-                        last_emotion = latest_emotion
                     break
                     
                 time.sleep(0.5)  # Reduce CPU usage
@@ -281,19 +323,23 @@ def camera_worker():
         camera_active = False
 
 def emotion_sender():
-    """Send periodic emotion updates with heartbeat"""
+    """Send very infrequent heartbeat - no emotion messages"""
     while True:
-        time.sleep(15)  # Increased interval to reduce load
+        time.sleep(120)  # Only heartbeat every 2 minutes
         if connected_clients > 0:
             try:
-                # Send heartbeat/status message
-                socketio.emit("heartbeat", {"status": "alive", "clients": connected_clients})
+                # Send heartbeat/status only - NO emotion messages
+                socketio.emit("heartbeat", {
+                    "status": "alive", 
+                    "clients": connected_clients,
+                    "total_messages": message_count,
+                    "last_emotion": latest_emotion,
+                    "last_confidence": round(latest_confidence, 2)
+                })
+                print(f"💓 Heartbeat sent - {connected_clients} clients connected, {message_count} total messages")
                 
-                # Send emotion update if we have valid data
-                if latest_confidence > 0:
-                    send_emotion_message()
             except Exception as e:
-                print(f"Error in emotion sender: {e}")
+                print(f"Error in heartbeat: {e}")
 
 @app.route("/")
 def index():
@@ -306,7 +352,12 @@ def health():
         "clients": connected_clients,
         "camera_active": camera_active,
         "latest_emotion": latest_emotion,
-        "confidence": latest_confidence
+        "confidence": latest_confidence,
+        "total_messages_sent": message_count,
+        "last_sent_emotion": last_sent_emotion,
+        "emotion_stability": emotion_stability_tracker,
+        "message_cooldown_seconds": message_cooldown,
+        "minimum_stability_required": minimum_emotion_duration
     }
 
 @socketio.on("connect")
@@ -318,8 +369,8 @@ def on_connect():
     try:
         # Send current emotion state immediately to new client
         socketio.emit("connection_ack", {"message": "Connected successfully"})
-        if latest_confidence > 0:
-            send_emotion_message()
+        # DON'T send emotion message on connect - let them wait for natural detection
+        print(f"✅ Client connected - no immediate message sent")
     except Exception as e:
         print(f"Error on connect: {e}")
 
