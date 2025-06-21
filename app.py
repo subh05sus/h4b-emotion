@@ -4,9 +4,15 @@ import threading
 import time
 import cv2
 import numpy as np
-from keras.models import Sequential
-from keras.layers import Conv2D, MaxPooling2D, Dropout, Flatten, Dense
+import asyncio
+import base64
+import io
+import os
+import PIL.Image
 import logging
+import json
+from google import genai
+from google.genai import types
 
 # Configure logging
 logging.getLogger('socketio').setLevel(logging.WARNING)
@@ -24,191 +30,168 @@ socketio = SocketIO(
     async_mode='threading'
 )
 
-# Model architecture
-model = Sequential()
-model.add(Conv2D(32, kernel_size=(3, 3), activation='relu', input_shape=(48, 48, 1)))
-model.add(Conv2D(64, kernel_size=(3, 3), activation='relu'))
-model.add(MaxPooling2D(pool_size=(2, 2)))
-model.add(Dropout(0.25))
-model.add(Conv2D(128, kernel_size=(3, 3), activation='relu'))
-model.add(MaxPooling2D(pool_size=(2, 2)))
-model.add(Conv2D(128, kernel_size=(3, 3), activation='relu'))
-model.add(MaxPooling2D(pool_size=(2, 2)))
-model.add(Dropout(0.25))
-model.add(Flatten())
-model.add(Dense(1024, activation='relu'))
-model.add(Dropout(0.5))
-model.add(Dense(7, activation='softmax'))
+# Gemini API configuration
+MODEL = "gemini-1.5-flash"
+client = genai.Client(
+    api_key=os.environ.get("GEMINI_API_KEY", "AIzaSyCTVlbNUi8NGVyzdxqMsH7kwfofWLHKmFQ"),
+)
 
-# Load model weights
-model.load_weights('model.h5')
-face_cascade = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
-
-emotion_dict = {
-    0: "Angry", 1: "Disgusted", 2: "Fearful",
-    3: "Happy", 4: "Neutral", 5: "Sad", 6: "Surprised"
-}
-
-def get_emotion_response(emotion, confidence):
-    """Generate emotion-specific responses based on confidence levels"""
-    
-    # High confidence responses (80%+)
-    high_confidence_responses = {
-        "Angry": [
-            "I can clearly see you're very angry right now. Take deep breaths and count to ten.",
-            "Your anger is quite evident. What's causing this intense frustration?",
-            "You look really upset. Would you like to talk about what's making you so angry?"
-        ],
-        "Disgusted": [
-            "You look genuinely disgusted. Is something particularly unpleasant bothering you?",
-            "That's a clear look of disgust. What's causing this strong reaction?",
-            "I can see you're really put off by something. What's making you feel this way?"
-        ],
-        "Fearful": [
-            "I can see you're quite frightened. Remember, you're safe here with me.",
-            "You look genuinely scared. Take a moment to breathe - everything will be okay.",
-            "Your fear is very apparent. What's making you feel so anxious right now?"
-        ],
-        "Happy": [
-            "You're beaming with joy! Your happiness is absolutely contagious!",
-            "What a wonderful, genuine smile! You look truly delighted!",
-            "Your happiness is radiating! Something amazing must have happened!"
-        ],
-        "Neutral": [
-            "You appear completely calm and composed. A picture of tranquility.",
-            "Your expression shows perfect balance and serenity.",
-            "You look peacefully neutral - very centered and mindful."
-        ],
-        "Sad": [
-            "I can see deep sadness in your expression. I'm here if you want to share what's wrong.",
-            "You look genuinely heartbroken. Sometimes it helps to talk about what's troubling you.",
-            "Your sadness is very clear. Remember that difficult feelings are temporary."
-        ],
-        "Surprised": [
-            "Wow! You look absolutely astonished! What just happened?",
-            "That's pure shock on your face! Tell me about this big surprise!",
-            "You're clearly stunned by something! What caught you so off guard?"
-        ]
-    }
-    
-    # Medium confidence responses (50-79%)
-    medium_confidence_responses = {
-        "Angry": [
-            "You seem somewhat irritated. Is something bothering you?",
-            "I detect some frustration. What's on your mind?",
-            "You appear a bit upset. Want to talk about it?"
-        ],
-        "Disgusted": [
-            "You look a bit put off by something. What's not sitting well with you?",
-            "I sense some displeasure. Is something not quite right?",
-            "You seem mildly disgusted. What's causing this reaction?"
-        ],
-        "Fearful": [
-            "You look a bit worried. Is everything alright?",
-            "I sense some anxiety. What's making you feel uneasy?",
-            "You appear somewhat concerned. What's troubling you?"
-        ],
-        "Happy": [
-            "You seem to be in a good mood! Something nice happen?",
-            "I can see a hint of happiness. What's bringing you joy?",
-            "You look pleased about something. Care to share?"
-        ],
-        "Neutral": [
-            "You appear calm and collected. How are you feeling?",
-            "Your expression seems balanced. Everything going well?",
-            "You look composed. What's on your mind?"
-        ],
-        "Sad": [
-            "You seem a bit down. Is something weighing on your mind?",
-            "I detect some melancholy. What's making you feel low?",
-            "You appear somewhat troubled. Want to talk about it?"
-        ],
-        "Surprised": [
-            "You look a bit taken aback. Something unexpected happen?",
-            "I sense some surprise. What caught your attention?",
-            "You seem mildly shocked. What's the news?"
-        ]
-    }
-    
-    # Low confidence responses (below 50%)
-    low_confidence_responses = {
-        "Angry": [
-            "I'm picking up on some possible tension. How are you really feeling?",
-            "There might be some frustration there. Want to talk about your day?",
-            "I sense you might be a bit agitated. What's going on?"
-        ],
-        "Disgusted": [
-            "Something seems to be bothering you slightly. What's on your mind?",
-            "I might be detecting some displeasure. Is everything okay?",
-            "You could be feeling a bit off about something. Care to share?"
-        ],
-        "Fearful": [
-            "You might be feeling a bit uncertain. Is there something worrying you?",
-            "I sense you could be slightly anxious. What's on your mind?",
-            "There might be some concern there. Want to talk about it?"
-        ],
-        "Happy": [
-            "You might be feeling a bit positive. What's going well today?",
-            "I think I detect some contentment. How are things going?",
-            "You could be in a decent mood. Anything good happening?"
-        ],
-        "Neutral": [
-            "You seem fairly balanced. How are you feeling right now?",
-            "Your expression appears neutral. What's going through your mind?",
-            "You look pretty calm. How's your day going?"
-        ],
-        "Sad": [
-            "You might be feeling a bit low. Is everything alright?",
-            "I think I detect some sadness. What's been on your mind?",
-            "You could be feeling down about something. Want to share?"
-        ],
-        "Surprised": [
-            "You might have been caught off guard by something. What happened?",
-            "I think something unexpected might have occurred. Care to share?",
-            "You could be processing something surprising. What's new?"
-        ]
-    }
-    
-    # Select response set based on confidence
-    if confidence >= 0.8:
-        responses = high_confidence_responses.get(emotion, ["I can clearly see strong emotions."])
-    elif confidence >= 0.5:
-        responses = medium_confidence_responses.get(emotion, ["I think I detect some emotions."])
-    else:
-        responses = low_confidence_responses.get(emotion, ["I'm trying to read your expression."])
-    
-    # Add confidence qualifier to the response
-    import random
-    base_response = random.choice(responses)
-
-    
-    return base_response
-
+# Global variables
 latest_emotion = "Neutral"
 latest_confidence = 0.0
+latest_objects = []
+latest_message = "Looking around to see what's happening..."
 connected_clients = 0
 camera_active = False
 last_message_time = 0
+gemini_session = None
+
+# Context tracking for previous analyses
+emotion_history = []
+object_history = []
+analysis_context = {
+    "previous_emotions": [],
+    "emotion_trends": "",
+    "object_consistency": [],
+    "interaction_count": 0,
+    "session_start_time": time.time()
+}
+
+def analyze_emotion_and_objects_with_gemini(image_data):
+    """Analyze emotion and objects using Gemini Vision API"""
+    try:
+        # Get context from previous analyses
+        context_summary = get_context_summary()
+        
+        # Create the prompt for emotion and object analysis
+        prompt = f"""    
+        Analyze this image and provide:
+        1. The primary emotion of any person in the image
+        2. Key objects visible in the scene
+        3. Generate a casual, human-like response message based on what you see
+        
+        CONTEXT FROM PREVIOUS INTERACTIONS: {context_summary}
+        
+        Use this context to make your response more natural and acknowledge patterns or changes you notice.
+        
+        Respond ONLY with a JSON object in this exact format:
+        {{
+            "emotion": "one of: Happy, Sad, Angry, Fearful, Surprised, Disgusted, Neutral",
+            "confidence": 0.85,
+            "objects": ["object1", "object2", "object3"],
+            "message": "casual human-like message about what you observe - be conversational and natural, consider the context from previous interactions"
+        }}
+        
+        For the message:
+        - Use casual, natural language like you're talking to a friend
+        - Comment on emotions AND objects you see
+        - Consider the context and acknowledge patterns, changes, or consistency
+        - Vary your conversation starters
+        - Be encouraging and positive when appropriate
+        - Ask questions or make observations naturally
+        - Keep it conversational and engaging
+        - Reference previous emotions or trends when relevant
+        
+        Examples of good context-aware messages:
+        - "Still looking happy! I can see you're keeping that positive energy going."
+        - "I notice you've shifted from neutral to more focused - that laptop is getting some serious attention!"
+        - "You seem to be in a good mood today - this is the third time I've seen you smiling."
+        - "Your workspace looks consistently organized, and you're looking more relaxed now."
+        
+        Be accurate with confidence scores (0.0 to 1.0). Only use high confidence (0.8+) when very certain about the emotion.
+        """
+        
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=[
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": prompt},
+                        {"inline_data": image_data}
+                    ]
+                }
+            ]
+        )
+        
+        # Parse the response
+        response_text = response.text.strip()
+        
+        # Try to extract JSON from the response
+        try:
+            # Look for JSON content between ```json and ``` or just raw JSON
+            if "```json" in response_text:
+                json_start = response_text.find("```json") + 7
+                json_end = response_text.find("```", json_start)
+                json_text = response_text[json_start:json_end].strip()
+            elif "{" in response_text and "}" in response_text:
+                json_start = response_text.find("{")
+                json_end = response_text.rfind("}") + 1
+                json_text = response_text[json_start:json_end]
+            else:
+                json_text = response_text
+                
+            result = json.loads(json_text)
+            
+            # Validate the response structure
+            if "emotion" in result and "confidence" in result and "message" in result:
+                return (
+                    result["emotion"], 
+                    float(result["confidence"]), 
+                    result.get("objects", []),
+                    result["message"]
+                )
+            else:
+                print(f"Invalid response structure: {result}")
+                return "Neutral", 0.5, [], "I'm having trouble reading your expression right now."
+                
+        except json.JSONDecodeError as e:
+            print(f"JSON parsing error: {e}")
+            print(f"Raw response: {response_text}")
+            return "Neutral", 0.3, [], "Something went wrong while analyzing the image."
+            
+    except Exception as e:
+        print(f"Gemini API error: {e}")
+        return "Neutral", 0.2, [], f"Having some technical difficulties: {str(e)}"
+
+def prepare_image_for_gemini(frame):
+    """Convert OpenCV frame to Gemini-compatible format"""
+    try:
+        # Convert BGR to RGB
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = PIL.Image.fromarray(frame_rgb)
+        
+        # Resize for better processing
+        img.thumbnail([1024, 1024])
+        
+        # Convert to base64
+        image_io = io.BytesIO()
+        img.save(image_io, format="jpeg")
+        image_io.seek(0)
+        
+        image_bytes = image_io.read()
+        return {
+            "mime_type": "image/jpeg", 
+            "data": base64.b64encode(image_bytes).decode()
+        }
+    except Exception as e:
+        print(f"Error preparing image: {e}")
+        return None
 
 def send_emotion_message():
     """Send emotion message to all connected clients with error handling"""
-    global latest_emotion, latest_confidence, last_message_time
+    global latest_emotion, latest_confidence, latest_message, last_message_time
     
     current_time = time.time()
-    # Avoid sending messages too frequently (max once every 5 seconds)
-    if current_time - last_message_time < 5.0:
+    # Avoid sending messages too frequently (max once every 30 seconds)
+    if current_time - last_message_time < 30.0:
         return
         
     if connected_clients > 0:
         try:
-            response = get_emotion_response(latest_emotion, latest_confidence)
             payload = {
                 "type": "AVATAR_TALK",
-                "text": response,
-                "confidence": round(latest_confidence, 4),
-                "emotion": latest_emotion,
-                "confidence_level": "high" if latest_confidence >= 0.8 else "medium" if latest_confidence >= 0.5 else "low",
-                "timestamp": int(current_time * 1000)
+                "text": latest_message
             }
             print("Sending via socket.io:", payload)
             socketio.emit("AVATAR_TALK", payload)
@@ -217,7 +200,7 @@ def send_emotion_message():
             print(f"Error sending message: {e}")
 
 def camera_worker():
-    global latest_emotion, latest_confidence, camera_active
+    global latest_emotion, latest_confidence, latest_objects, latest_message, camera_active
     camera_active = True
     cap = None
     last_emotion = None
@@ -245,32 +228,33 @@ def camera_worker():
                     continue
                     
                 consecutive_failures = 0
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=5)
-
-                for (x, y, w, h) in faces:
-                    roi_gray = gray[y:y + h, x:x + w]
-                    cropped_img = np.expand_dims(np.expand_dims(cv2.resize(roi_gray, (48, 48)), -1), 0)
+                
+                # Prepare image for Gemini analysis
+                image_data = prepare_image_for_gemini(frame)
+                if image_data:
+                    emotion, confidence, objects, message = analyze_emotion_and_objects_with_gemini(image_data)
                     
-                    # Suppress prediction warnings
-                    with np.errstate(divide='ignore', invalid='ignore'):
-                        prediction = model.predict(cropped_img, verbose=0)
+                    # Update context tracking
+                    update_analysis_context(emotion, confidence, objects)
                     
-                    maxindex = int(np.argmax(prediction))
-                    latest_emotion = emotion_dict[maxindex]
-                    latest_confidence = float(prediction[0][maxindex])
-                    print(f"Detected: {latest_emotion} ({latest_confidence:.2f})")
-                      # Send message only when emotion changes significantly
-                    if latest_emotion != last_emotion and connected_clients > 0 and latest_confidence > 0.6:
+                    latest_emotion = emotion
+                    latest_confidence = confidence
+                    latest_objects = objects
+                    latest_message = message
+                    
+                    print(f"Gemini detected: {emotion} ({confidence:.2f}) - Objects: {objects}")
+                    print(f"Generated message: {message}")
+                    
+                    # Send message only when emotion changes significantly or confidence is good
+                    if (emotion != last_emotion or confidence > 0.6) and connected_clients > 0:
                         send_emotion_message()
-                        last_emotion = latest_emotion
-                    break
+                        last_emotion = emotion
                     
-                time.sleep(1.0)  # Increased sleep to reduce processing frequency
+                time.sleep(12.0)  # Increased to 12 seconds for less frequent analysis
                 
             except Exception as e:
                 print(f"Error in camera processing: {e}")
-                time.sleep(1)
+                time.sleep(2)
                 
     except Exception as e:
         print(f"Camera initialization error: {e}")
@@ -280,14 +264,11 @@ def camera_worker():
         camera_active = False
 
 def emotion_sender():
-    """Send periodic emotion updates with heartbeat"""
+    """Send periodic emotion updates"""
     while True:
-        time.sleep(15)  # Increased interval to reduce load
+        time.sleep(60)  # Set to 60 seconds to match message frequency
         if connected_clients > 0:
             try:
-                # Send heartbeat/status message
-                socketio.emit("heartbeat", {"status": "alive", "clients": connected_clients})
-                
                 # Send emotion update if we have valid data
                 if latest_confidence > 0:
                     send_emotion_message()
@@ -305,7 +286,16 @@ def health():
         "clients": connected_clients,
         "camera_active": camera_active,
         "latest_emotion": latest_emotion,
-        "confidence": latest_confidence
+        "confidence": latest_confidence,
+        "latest_objects": latest_objects,
+        "latest_message": latest_message,
+        "context": {
+            "interaction_count": analysis_context["interaction_count"],
+            "emotion_trends": analysis_context["emotion_trends"],
+            "previous_emotions": analysis_context["previous_emotions"],
+            "consistent_objects": analysis_context["object_consistency"],
+            "session_duration_minutes": round((time.time() - analysis_context["session_start_time"]) / 60, 1)
+        }
     }
 
 @socketio.on("connect")
@@ -316,7 +306,6 @@ def on_connect():
     
     try:
         # Send current emotion state immediately to new client
-        socketio.emit("connection_ack", {"message": "Connected successfully"})
         if latest_confidence > 0:
             send_emotion_message()
     except Exception as e:
@@ -332,7 +321,11 @@ def on_disconnect():
 def handle_ping():
     """Handle client ping requests"""
     try:
-        socketio.emit("pong", {"timestamp": int(time.time() * 1000)})
+        # Simple pong response with same structure
+        socketio.emit("AVATAR_TALK", {
+            "type": "AVATAR_TALK",
+            "text": "Connection is active"
+        })
     except Exception as e:
         print(f"Error handling ping: {e}")
 
@@ -346,11 +339,119 @@ def cleanup():
     camera_active = False
     print("Cleaning up resources...")
 
+def update_analysis_context(emotion, confidence, objects):
+    """Update the context tracking with new analysis data"""
+    global emotion_history, object_history, analysis_context
+    
+    current_time = time.time()
+    
+    # Add to emotion history (keep last 10 entries)
+    emotion_entry = {
+        "emotion": emotion,
+        "confidence": confidence,
+        "timestamp": current_time
+    }
+    emotion_history.append(emotion_entry)
+    if len(emotion_history) > 10:
+        emotion_history.pop(0)
+    
+    # Add to object history (keep last 5 entries)
+    object_history.append({
+        "objects": objects,
+        "timestamp": current_time
+    })
+    if len(object_history) > 5:
+        object_history.pop(0)
+    
+    # Update analysis context
+    analysis_context["previous_emotions"] = [e["emotion"] for e in emotion_history[-5:]]
+    analysis_context["interaction_count"] += 1
+    
+    # Determine emotion trends
+    if len(emotion_history) >= 3:
+        recent_emotions = [e["emotion"] for e in emotion_history[-3:]]
+        if all(e == recent_emotions[0] for e in recent_emotions):
+            analysis_context["emotion_trends"] = f"consistently {recent_emotions[0].lower()}"
+        elif emotion_history[-1]["emotion"] != emotion_history[-2]["emotion"]:
+            analysis_context["emotion_trends"] = f"changed from {emotion_history[-2]['emotion'].lower()} to {emotion.lower()}"
+        else:
+            analysis_context["emotion_trends"] = "showing mixed emotions"
+    
+    # Track consistent objects
+    if len(object_history) >= 2:
+        all_recent_objects = []
+        for entry in object_history[-3:]:
+            all_recent_objects.extend(entry["objects"])
+        # Find objects that appear frequently
+        from collections import Counter
+        object_counts = Counter(all_recent_objects)
+        analysis_context["object_consistency"] = [obj for obj, count in object_counts.items() if count >= 2]
+
+def get_context_summary():
+    """Generate a context summary for Gemini"""
+    if analysis_context["interaction_count"] == 0:
+        return "This is the first interaction."
+    
+    context_parts = []
+    
+    # Add interaction count
+    context_parts.append(f"This is interaction #{analysis_context['interaction_count']}")
+    
+    # Add emotion history
+    if analysis_context["previous_emotions"]:
+        prev_emotions = ", ".join(analysis_context["previous_emotions"][-3:])
+        context_parts.append(f"Recent emotions: {prev_emotions}")
+    
+    # Add emotion trends
+    if analysis_context["emotion_trends"]:
+        context_parts.append(f"Emotion trend: {analysis_context['emotion_trends']}")
+    
+    # Add consistent objects
+    if analysis_context["object_consistency"]:
+        consistent_objects = ", ".join(analysis_context["object_consistency"][:3])
+        context_parts.append(f"Consistent objects in scene: {consistent_objects}")
+    
+    # Add session duration
+    session_duration = (time.time() - analysis_context["session_start_time"]) / 60
+    if session_duration > 5:
+        context_parts.append(f"Session duration: {session_duration:.0f} minutes")
+    
+    return " | ".join(context_parts)
+
+def reset_analysis_context():
+    """Reset the analysis context (useful for new sessions)"""
+    global emotion_history, object_history, analysis_context
+    
+    emotion_history.clear()
+    object_history.clear()
+    analysis_context = {
+        "previous_emotions": [],
+        "emotion_trends": "",
+        "object_consistency": [],
+        "interaction_count": 0,
+        "session_start_time": time.time()
+    }
+    print("Analysis context has been reset")
+
+@app.route("/reset-context", methods=["POST"])
+def reset_context_endpoint():
+    """Endpoint to reset the analysis context"""
+    reset_analysis_context()
+    return {"status": "context reset", "message": "Analysis context has been cleared"}
+
 import atexit
 atexit.register(cleanup)
 
 if __name__ == "__main__":
-    print("Starting emotion detection server...")
+    print("Starting Gemini-powered emotion detection server...")
+    
+    # Check for API key
+    if not os.environ.get("GEMINI_API_KEY"):
+        print("ERROR: GEMINI_API_KEY environment variable not set!")
+        print("Please set your Gemini API key:")
+        print("On Windows: set GEMINI_API_KEY=your_api_key_here")
+        print("On Linux/Mac: export GEMINI_API_KEY=your_api_key_here")
+        exit(1)
     
     try:
         # Start camera worker thread
