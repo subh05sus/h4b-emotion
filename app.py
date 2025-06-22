@@ -137,7 +137,7 @@ def analyze_emotion_and_objects_with_gemini(image_data):
             if "emotion" in result and "confidence" in result and "message" in result:
                 return (
                     result["emotion"], 
-                    float(result["confidence"]), 
+                    float(result["confidence"]),
                     result.get("objects", []),
                     result["message"]
                 )
@@ -466,7 +466,7 @@ if __name__ == "__main__":
         socketio.run(
             app, 
             host="0.0.0.0", 
-            port=3001,
+            port=3002,
             debug=False,
             use_reloader=False,
             log_output=False
@@ -477,3 +477,5 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Server error: {e}")
         cleanup()
+
+# chatting with you
